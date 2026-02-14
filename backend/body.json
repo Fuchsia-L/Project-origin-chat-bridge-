@@ -1,0 +1,5 @@
+﻿{
+  "model": "gemini-3-pro-preview-11-2025",
+  "messages": [{"role":"user","content":"ping"}],
+  "temperature": 0.7
+}
