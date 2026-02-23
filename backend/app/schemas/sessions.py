@@ -21,6 +21,9 @@ class SessionPayload(BaseModel):
     title: str
     createdAt: int
     updatedAt: int
+    deletedAt: int | None = None
+    persona_id: str | None = None
+    project_id: str | None = None
     messages: list[SessionMessage]
     settings: SessionSettings
 

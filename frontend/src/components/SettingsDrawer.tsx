@@ -11,6 +11,25 @@ const DEFAULT_MODELS = [
 
 const API_BASE = "http://127.0.0.1:8000";
 
+const DEFAULT_SAMPLING_PARAMS = {
+    temperature: 0.7,
+    top_p: 1,
+    frequency_penalty: 0,
+    presence_penalty: 0,
+};
+
+const PARAM_MIN = {
+    temperature: 0,
+    top_p: 0,
+    frequency_penalty: -2,
+    presence_penalty: -2,
+};
+
+function fmtParam(value: number, min: number, digits = 2) {
+    if (value <= min) return "未设置";
+    return value.toFixed(digits);
+}
+
 export default function SettingsDrawer({
     open,
     onClose,
@@ -128,7 +147,7 @@ export default function SettingsDrawer({
                     </button>
                 </div>
 
-                <div className="p-4 space-y-4">
+                <div className="h-[calc(100%-64px)] overflow-y-auto p-4 space-y-4">
                     <div className="space-y-2">
                         <div className="text-sm font-medium">System Prompt</div>
                         <textarea
@@ -170,18 +189,107 @@ export default function SettingsDrawer({
 
                         <div className="space-y-2">
                             <div className="text-sm font-medium">Temperature</div>
+                            <div className="text-xs text-zinc-500">
+                                当前：{fmtParam(settings.temperature, PARAM_MIN.temperature, 2)}
+                            </div>
                             <input
-                                type="number"
-                                step="0.1"
-                                min="0"
-                                max="2"
-                                className="w-full rounded-xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                                type="range"
+                                step="0.05"
+                                min={PARAM_MIN.temperature}
+                                max={2}
+                                className="w-full"
                                 value={settings.temperature}
                                 onChange={(e) =>
                                     onChange({ ...settings, temperature: Number(e.target.value) })
                                 }
                             />
+                            <div className="text-[11px] text-zinc-500">
+                                控制输出的随机性和创造性
+                            </div>
                         </div>
+
+                        <div className="space-y-2">
+                            <div className="text-sm font-medium">Top P</div>
+                            <div className="text-xs text-zinc-500">
+                                当前：{fmtParam(settings.top_p, PARAM_MIN.top_p, 2)}
+                            </div>
+                            <input
+                                type="range"
+                                step="0.01"
+                                min={PARAM_MIN.top_p}
+                                max={1}
+                                className="w-full"
+                                value={settings.top_p}
+                                onChange={(e) =>
+                                    onChange({ ...settings, top_p: Number(e.target.value) })
+                                }
+                            />
+                            <div className="text-[11px] text-zinc-500">
+                                核采样，控制词汇选择的多样性
+                            </div>
+                        </div>
+
+                        <div className="space-y-2">
+                            <div className="text-sm font-medium">Frequency Penalty</div>
+                            <div className="text-xs text-zinc-500">
+                                当前：{fmtParam(settings.frequency_penalty, PARAM_MIN.frequency_penalty, 2)}
+                            </div>
+                            <input
+                                type="range"
+                                step="0.05"
+                                min={PARAM_MIN.frequency_penalty}
+                                max={2}
+                                className="w-full"
+                                value={settings.frequency_penalty}
+                                onChange={(e) =>
+                                    onChange({
+                                        ...settings,
+                                        frequency_penalty: Number(e.target.value),
+                                    })
+                                }
+                            />
+                            <div className="text-[11px] text-zinc-500">
+                                频率惩罚，减少重复词汇的出现
+                            </div>
+                        </div>
+
+                        <div className="space-y-2">
+                            <div className="text-sm font-medium">Presence Penalty</div>
+                            <div className="text-xs text-zinc-500">
+                                当前：{fmtParam(settings.presence_penalty, PARAM_MIN.presence_penalty, 2)}
+                            </div>
+                            <input
+                                type="range"
+                                step="0.05"
+                                min={PARAM_MIN.presence_penalty}
+                                max={2}
+                                className="w-full"
+                                value={settings.presence_penalty}
+                                onChange={(e) =>
+                                    onChange({
+                                        ...settings,
+                                        presence_penalty: Number(e.target.value),
+                                    })
+                                }
+                            />
+                            <div className="text-[11px] text-zinc-500">
+                                存在惩罚，鼓励讨论新话题
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="flex justify-end">
+                        <button
+                            className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+                            onClick={() =>
+                                onChange({
+                                    ...settings,
+                                    ...DEFAULT_SAMPLING_PARAMS,
+                                })
+                            }
+                        >
+                            恢复默认参数
+                        </button>
                     </div>
 
                     <div className="flex items-center justify-between rounded-xl border px-3 py-2">
@@ -196,6 +304,23 @@ export default function SettingsDrawer({
                             onClick={() => onChange({ ...settings, stream: !settings.stream })}
                         >
                             {settings.stream ? "已开启" : "已关闭"}
+                        </button>
+                    </div>
+
+                    <div className="flex items-center justify-between rounded-xl border px-3 py-2">
+                        <div className="text-sm font-medium">开发者模式</div>
+                        <button
+                            className={[
+                                "rounded-full px-3 py-1 text-xs",
+                                settings.developer_mode
+                                    ? "bg-blue-600 text-white"
+                                    : "bg-zinc-100 text-zinc-700",
+                            ].join(" ")}
+                            onClick={() =>
+                                onChange({ ...settings, developer_mode: !settings.developer_mode })
+                            }
+                        >
+                            {settings.developer_mode ? "已开启" : "已关闭"}
                         </button>
                     </div>
 

@@ -11,6 +11,8 @@ __pycache__/
 # test/cache
 .pytest_cache/
 .mypy_cache/
+backend/.pytest_cache/
+backend/pytest-cache-files-*/
 
 # frontend
 node_modules/

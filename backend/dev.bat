@@ -2,6 +2,9 @@
 cd /d %~dp0
 
 set "DB_CONTAINER=project-origin-db"
+set "TMP=%CD%\.tmp"
+set "TEMP=%TMP%"
+if not exist "%TMP%" mkdir "%TMP%"
 
 REM Ensure Docker is available
 docker info >NUL 2>&1
@@ -35,7 +38,50 @@ pause
 exit /b 1
 
 :DB_READY
-call .venv\Scripts\activate.bat
+set "VENV_DIR="
+if exist ".venv311\Scripts\python.exe" set "VENV_DIR=.venv311"
+if not defined VENV_DIR if exist ".venv\Scripts\python.exe" set "VENV_DIR=.venv"
+
+if not defined VENV_DIR (
+  echo [dev] No virtualenv found. Creating .venv311...
+  py -3.11 -m venv .venv311 >NUL 2>&1
+  if errorlevel 1 (
+    python -m venv .venv311
+    if errorlevel 1 (
+      echo [dev] Failed to create virtualenv. Please install Python 3.11+.
+      pause
+      exit /b 1
+    )
+  )
+  set "VENV_DIR=.venv311"
+)
+
+call %VENV_DIR%\Scripts\activate.bat
+
+python -m pip --version >NUL 2>&1
+if errorlevel 1 (
+  echo [dev] pip missing in %VENV_DIR%. Repairing...
+  python -m ensurepip --upgrade
+)
+
+python -c "import sqlalchemy, fastapi" >NUL 2>&1
+if errorlevel 1 (
+  echo [dev] Installing backend dependencies...
+  python -m pip install -r requirements.txt
+  if errorlevel 1 (
+    echo [dev] Dependency install failed.
+    pause
+    exit /b 1
+  )
+)
+
+echo [dev] Running database migrations...
+python -m alembic upgrade head
+if errorlevel 1 (
+  echo [dev] Migration failed. Please check DB state.
+  pause
+  exit /b 1
+)
 
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 

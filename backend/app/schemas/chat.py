@@ -14,6 +14,12 @@ class ChatRequest(BaseModel):
     system_prompt: str = Field(default="")
     model: Optional[str] = None
     temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    frequency_penalty: Optional[float] = None
+    presence_penalty: Optional[float] = None
+    session_id: Optional[str] = None
+    persona_id: Optional[str] = None
+    project_id: Optional[str] = None
     messages: list[ChatMessage] = Field(default_factory=list)
 
 

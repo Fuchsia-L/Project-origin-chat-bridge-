@@ -3,7 +3,11 @@ export type PersistedSettings = {
     system_prompt: string;
     model: string;
     temperature: number;
+    top_p?: number;
+    frequency_penalty?: number;
+    presence_penalty?: number;
     stream: boolean;
+    developer_mode?: boolean;
 };
 
 export type PersistedMessage = {
@@ -24,6 +28,9 @@ export type PersistedSession = {
     title: string;
     createdAt: number;
     updatedAt: number;
+    deletedAt?: number | null;
+    persona_id?: string;
+    project_id?: string | null;
     messages: PersistedMessage[];
     settings: PersistedSettings;
 };
@@ -39,6 +46,26 @@ export type PersistedSyncStateV1 = {
     lastSyncAt: number;
 };
 
+export type PersistedPersona = {
+    id: string;
+    user_id: string;
+    name: string;
+    avatar_url?: string;
+    system_prompt: string;
+    greeting?: string;
+    example_messages?: Array<{ role: "user" | "assistant"; content: string }>;
+    description?: string;
+    tags?: string[];
+    is_default?: boolean;
+    created_at: string;
+    updated_at: string;
+};
+
+export type PersistedPersonasStateV1 = {
+    schemaVersion: 1;
+    personas: PersistedPersona[];
+};
+
 let storageNamespace = "global";
 
 const LEGACY_STORAGE_KEY = "project-origin:v1";
@@ -50,6 +77,7 @@ function withNamespace(key: string) {
 const SESSIONS_STORAGE_KEY = "project-origin:sessions:v1";
 const MODELS_STORAGE_KEY = "project-origin:models:v1";
 const SYNC_STORAGE_KEY = "project-origin:sync:v1";
+const PERSONAS_STORAGE_KEY = "project-origin:personas:v1";
 
 export function setStorageNamespace(value: string | null) {
     storageNamespace = value?.trim() ? value.trim() : "global";
@@ -106,8 +134,8 @@ export function loadSessionsState(): PersistedSessionsStateV1 | null {
 export function saveSessionsState(state: PersistedSessionsStateV1) {
     try {
         localStorage.setItem(withNamespace(SESSIONS_STORAGE_KEY), JSON.stringify(state));
-    } catch {
-        // ignore
+    } catch (err) {
+        console.warn("[persist] saveSessionsState failed", err);
     }
 }
 
@@ -135,6 +163,35 @@ export function saveSyncState(state: PersistedSyncStateV1) {
 export function clearSyncState() {
     try {
         localStorage.removeItem(withNamespace(SYNC_STORAGE_KEY));
+    } catch {
+        // ignore
+    }
+}
+
+export function loadPersonasState(): PersistedPersonasStateV1 | null {
+    try {
+        const raw = localStorage.getItem(withNamespace(PERSONAS_STORAGE_KEY));
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as PersistedPersonasStateV1;
+        if (!parsed || parsed.schemaVersion !== 1) return null;
+        if (!Array.isArray(parsed.personas)) return null;
+        return parsed;
+    } catch {
+        return null;
+    }
+}
+
+export function savePersonasState(state: PersistedPersonasStateV1) {
+    try {
+        localStorage.setItem(withNamespace(PERSONAS_STORAGE_KEY), JSON.stringify(state));
+    } catch {
+        // ignore
+    }
+}
+
+export function clearPersonasState() {
+    try {
+        localStorage.removeItem(withNamespace(PERSONAS_STORAGE_KEY));
     } catch {
         // ignore
     }

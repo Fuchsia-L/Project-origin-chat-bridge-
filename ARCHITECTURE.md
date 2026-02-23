@@ -1,146 +1,204 @@
-# Project Origin – Architecture
+﻿# Project Origin – Architecture
 
-## 1. 概览
-- 前端：React 19 + TypeScript + Vite + Tailwind，单页聊天界面，主要代码在 `frontend/src`。
-- 后端：FastAPI，提供 OpenAI 兼容 `/api/chat` 与流式 `/api/chat/stream` 端点，代码在 `backend/app`。
-- 状态存储：浏览器 `localStorage` + 服务器 PostgreSQL（会话云端同步 + 登录）。
-- 目标：提供多会话、本地持久化的聊天体验，支持账号登录与云端同步，并将请求转发给可配置的 OpenAI 兼容 LLM 网关。
+## 1. 系统概览
+- 前端：React 19 + TypeScript + Vite + Tailwind（`frontend/src`）。
+- 后端：FastAPI + Async SQLAlchemy + Alembic（`backend/app`）。
+- 数据：
+  - 本地：`localStorage`（多会话、模型列表、同步状态、persona 缓存）。
+  - 服务端：PostgreSQL（用户、会话、persona、记忆相关表）。
+- 核心能力：
+  - 聊天（流式/非流式）
+  - 多会话云同步
+  - Persona 角色系统
+  - 记忆系统（摘要压缩 + 跨会话长期记忆 + embedding 召回）
 
-## 2. 前端架构（`frontend`）
-### 2.1 入口与布局
-- `src/main.tsx`：React 渲染入口。
-- `src/App.tsx`：加载 `AuthScreen` 或 `Home`。
-- `src/pages/Home.tsx`：页面主逻辑（状态、事件、数据流）。
-- UI 组件：`components/ChatWindow.tsx`（消息气泡渲染 + raw/thinking 折叠）、`components/InputBar.tsx`（输入发送）、`components/SettingsDrawer.tsx`（模型与提示词管理）。
-- 认证组件：`components/AuthScreen.tsx`（注册/登录）。
-- 顶部栏：`Home` 的 header 为 sticky，始终固定在视口顶端。
-- 会话编辑：支持编辑/删除单条消息、强制中断回复、重新生成；同一条回复可在多次生成结果间切换（`1/2` 标签）。
+## 2. 前端架构
 
-### 2.2 状态与持久化
-- 核心存储封装：`src/store/chatStore.ts`
-  - 默认设置 `defaultSettings`（模型 `gemini-3-pro-preview-11-2025`，温度 0.7，system_prompt 为空）。
-  - 会话模型：`PersistedSession`（id/title/createdAt/updatedAt/messages/settings）。
-  - 会话列表状态：`PersistedSessionsStateV1`，持久化键 `project-origin:sessions:v1`（按用户命名空间隔离）。
-  - 迁移：若新存储为空，尝试从旧键 `project-origin:v1` 迁移。
-  - API：`loadChatState`、`saveChatState`（节流 300ms）、`saveSessionStateImmediate`、`createSession`、`switchSession`、`renameSession`、`clearChatState`、`buildSyncPayloads`、`mergeRemoteSessions`。
-  - 消息持久化过滤：不保存 `meta.isLoading`。
-- 序列化工具：`src/store/persist.ts`
-  - 读写 `localStorage`（按用户命名空间隔离），含模型列表键 `project-origin:models:v1` 与同步状态键 `project-origin:sync:v1`。
-  - `createThrottledSaver` 防抖写入，减少存储频率。
-- 认证存储：`src/store/authStore.ts`（access/refresh token + user）。
-- 会话切换时的即时保存：`Home.handleSwitchSession` 在切换前调用 `saveSessionStateImmediate`。
+### 2.1 入口与主页面
+- `frontend/src/main.tsx`：应用入口。
+- `frontend/src/App.tsx`：鉴权分流（`AuthScreen` / `Home`）。
+- `frontend/src/pages/Home.tsx`：主状态机与数据流核心。
 
-### 2.3 API 客户端
-- `src/api/chat.ts`：聊天请求（stream/post）。
-- `src/api/auth.ts`：注册/登录/刷新/退出。
-- `src/api/sync.ts`：会话 pull/push，同步冲突返回 `conflicts`。
-- `streamChat(baseUrl, payload, onEvent)`：`fetch POST {baseUrl}/api/chat/stream`，解析 SSE 事件（meta/delta/thinking/usage/raw/done）并实时回调。
-- 仅处理 HTTP 状态码与 JSON；上层负责错误显示。
+### 2.2 关键组件
+- `ChatWindow.tsx`：消息渲染、变体切换、编辑/删除、developer 折叠区（thinking/raw/memory status/sent context）。
+- `InputBar.tsx`：输入与发送（支持 Shift+Enter 换行）。
+- `SettingsDrawer.tsx`：模型与采样参数配置。
+- `PersonaManagerDrawer.tsx`：角色 CRUD、角色记忆查看/编辑/删除。
+- `PersonaPickerModal.tsx`：按角色创建新会话。
 
-### 2.4 交互与数据流（`Home.tsx`）
-1. **启动**：登录后 `loadChatState` 载入会话、消息、设置；填充 `sessions` 与 `activeSessionId`。
-2. **启动同步**：读取 `lastSyncAt` → `pull` → `mergeRemoteSessions` → 更新本地状态。
-2. **发送流程**：`handleSend`
-   - 本地追加 user 消息与 streaming assistant 占位；立即 `saveSessionStateImmediate`。
-   - 组装历史消息为 `ChatRequest`，根据设置选择 `streamChat` 或 `postChat`。
-   - 过程中按 delta 实时拼接回复；收到 thinking/usage/model 则更新 meta。
-   - 切换会话时，正在进行的流式会话继续在后台写入该会话，不会被中断。
-   - 支持强制中断（AbortController），中断后保留已输出内容与 token 使用情况（如有）。
-   - 失败：将错误文案作为 assistant 消息展示并持久化。
-3. **会话管理**：下拉切换、重命名（失焦/Enter）、新建会话、清空会话。
-4. **同步**：本地变更节流后 `push`；若 `conflicts` 返回则拉取覆盖并提示。
-5. **设置侧边栏**：`SettingsDrawer`
-  - 模型列表：默认 `gpt-4o-mini/gpt-4o/gemini-3-pro-preview-11-2025`，可增删拖拽排序并持久化。
-  - 自动完善 System Prompt：再次调用同一后端，以内置提示词请求当前模型生成更完整的 system prompt。
-  - 温度/模型实时写入 `settings`，自动保存。
+### 2.3 前端状态与持久化
+- `store/chatStore.ts`
+  - 会话状态：`sessions + activeId + messages + settings`。
+  - 提供 `create/switch/reorder/rename/delete` 等能力。
+  - 删除采用 tombstone 同步语义。
+  - 消息持久化保留 `thinking`（含 variant thinking），页面刷新后不丢失。
+- `store/personaStore.ts`
+  - persona 本地缓存 + 远端同步。
+- `store/persist.ts`
+  - 按用户命名空间写入 `localStorage`。
 
-### 2.5 样式与构建
-- Tailwind 配置：`tailwind.config.js`；全局样式 `src/index.css`.
-- 构建/脚本：`npm run dev/build/lint/preview`（Vite）。
+### 2.4 前端 API 层
+- `api/chat.ts`：`/api/chat`、`/api/chat/stream`。
+- `api/auth.ts`：登录/刷新/退出，`authorizedFetch` 自动刷新 token。
+  - 连续 `401/403` 刷新失败达到阈值（当前 3 次）才清空登录态；网络抖动/超时不直接登出。
+- `api/sync.ts`：会话 pull/push。
+- `api/personas.ts`：persona CRUD。
+- `api/memory.ts`：
+  - 会话全局压缩
+  - persona memory 列表/更新/删除
+  - approve/reject 审批接口
 
-## 3. 后端架构（`backend/app`）
+### 2.5 Home 聊天主流程
+1. 本地先插入 user + assistant 占位，并持久化。
+2. 组装请求（含 `session_id`、`persona_id`、采样参数）。
+3. 调用流式或非流式接口。
+4. 响应结束后：
+  - 清洗 `[内部回忆]... [回忆结束]` 前缀再展示。
+  - developer 模式下可查看 assembled messages 与 memory status。
+5. 空回复重试：
+  - 若 5 秒内已收到空回复，最多重试 3 次，状态显示“重试中”。
+6. 记忆审批弹窗：
+  - 回复成功后拉取 `needs_review=true` 的记忆。
+  - 支持逐条：确认写入（可编辑）、拒绝、跳过（下轮再出现）。
+
+### 2.6 采样参数 UI（设置页）
+- 四个参数均为滑杆：
+  - `temperature`（0~2）
+  - `top_p`（0~1）
+  - `frequency_penalty`（-2~2）
+  - `presence_penalty`（-2~2）
+- 滑到最小值显示“未设置”，请求中不传该字段。
+- 兼容策略：若 `temperature` 与 `top_p` 同时设置，默认仅发送 `temperature`。
+
+## 3. 后端架构
+
 ### 3.1 入口与中间件
-- `main.py`：创建 FastAPI 应用，注册中间件/路由。
-- `core/logging.py`：`request_id_middleware` 生成或透传 `x-request-id`，在响应头附带 `x-cost-ms`。
-- `core/errors.py`：统一异常结构（`AppError`/`HTTPException`），响应含 `request_id`。
-- `core/auth.py`：JWT 校验与 `get_current_user`。
-- `core/security.py`：密码哈希与 token 生成/解析。
+- `main.py`：注册路由与中间件。
+- `core/logging.py`：`request_id` 与耗时头。
+- `core/errors.py`：统一 `AppError`。
 
-### 3.2 配置（`core/config.py`）
-- 使用 `pydantic_settings.Settings`，读取 `.env`（样例见 `.env.example`）。
-- 关键参数：`DATABASE_URL`、`JWT_SECRET`、`JWT_ACCESS_TTL`、`JWT_REFRESH_TTL`、`SYNC_MAX_SESSIONS`、`SYNC_MAX_BYTES`、`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`、`LLM_TEMPERATURE`、`LLM_TIMEOUT_S`、`LLM_SAFETY_BLOCK`、`APP_HOST/PORT`、`APP_DEBUG_RAW`（决定是否透出上游 raw 响应）。
+### 3.2 鉴权
+- `core/auth.py`
+  - `get_current_user`：强鉴权。
+  - `get_optional_current_user`：聊天接口可选鉴权。
+- `routes/chat.py`
+  - `/api/chat`、`/api/chat/stream` 均使用可选鉴权。
+  - 有效 JWT 时启用记忆增强；匿名请求走基础模式。
 
-### 3.3 路由与契约
-- `routes/chat.py`：`POST /api/chat`（非流式），`POST /api/chat/stream`（SSE 流式）。
-- `routes/auth.py`：`POST /api/auth/register`、`/login`、`/refresh`、`/logout`。
-- `routes/sessions.py`：`GET /api/sessions/list`、`POST /api/sessions/pull`、`POST /api/sessions/push`。
-- `schemas/chat.py`：
-  - `ChatRequest`: system_prompt?, model?, temperature?, messages[{role: system|user|assistant, content}].
-  - `ChatResponse`: reply{role, content}, request_id, usage{input_tokens/output_tokens/total_tokens}?, raw?（调试）。
-- `schemas/auth.py`：注册/登录/刷新/退出请求与响应。
-- `schemas/sessions.py`：`SessionPayload`、`Pull/Push` 契约。
+### 3.3 配置（`core/config.py`）
+关键新增：
+- 上下文管理：
+  - `context_max_tokens`
+  - `context_recent_rounds`
+  - `context_summary_trigger`
+  - `context_summary_batch_rounds`
+  - `context_summary_min_tokens`
+  - `context_summary_tail_round_index`
+- 记忆提取：
+  - `memory_extract_enabled`
+  - `memory_extract_interval`
+  - `memory_max_per_persona`
+  - `memory_extract_require_confirm`
+  - `memory_extract_model`（默认 `gemini-3-flash-preview-thinking`）
+  - `memory_extract_fallback_model`
+- Embedding：`embedding_*` 全套配置。
+- 时区：`app_timezone`（默认 `UTC+8`）。
+- 摘要模型：
+  - `summary_model`（默认 `gemini-3-flash-preview-thinking`，未设置时回退 `llm_model`）。
 
-### 3.4 业务层
-- `services/chat_service.py`：
-  - `run_chat(system_prompt, messages, model, temperature, request_id)`。
-  - `run_chat_stream(...)`：解析上游流式数据并输出 SSE delta。
-  - 将 system prompt 插入消息首位；落到下游使用的 `req_messages`。
-  - 调用 LLM 客户端，解析 `choices[0].message.content` 为回复；兼容 prompt/completion/total token 字段；返回 (reply, usage, raw)。
-  - 任何解析/网关错误封装为 `AppError`（HTTP 502）。
+### 3.4 数据模型（`models.py`）
+- 既有：`User`、`RefreshToken`、`ChatSession`、`Persona`。
+- 记忆新增：
+  - `MemorySummary`：会话摘要快照（含覆盖消息范围、token 估算）。
+  - `PersonaMemory`：长期记忆（`is_active` + `needs_review`）。
+  - `MemoryEmbedding`：历史对话块向量（当前 Text JSON 向量存储）。
 
-### 3.5 LLM 客户端
-- `llm/client.py`：`OpenAICompatClient.chat_completions` 使用 `httpx.AsyncClient` 向 `{LLM_BASE_URL}/chat/completions` POST。
-- 处理：
-  - 传递 `Authorization: Bearer <LLM_API_KEY>`；可透传 `X-Request-Id`。
-  - 非 2xx：尽量解析 JSON error message，否则用响应文本；抛出 `AppError`.
-  - 成功：返回 JSON；解析失败同样抛错。
-- 目前仅实现 OpenAI 兼容接口（`adapters.py` 为空，为未来多厂商适配预留）。
+### 3.5 核心服务
 
-### 3.6 数据库
-- `db.py`：Async SQLAlchemy 连接与 `init_db()`。
-- `models.py`：
-  - `User`、`RefreshToken`、`ChatSession`（复合主键 user_id + id）、`Embedding`（预留）。
+#### 3.5.1 Context Assembler（`services/context_assembler.py`）
+五层上下文组装：
+1. system prompt
+2. 长期记忆
+3. 会话早期摘要
+4. 最近对话原文
+5. embedding 回忆
 
-### 3.7 部署与运行
-- 开发脚本：`dev.bat` 激活 `.venv` 后运行 `uvicorn app.main:app --reload --port 8000`.
-- 依赖：`fastapi`, `uvicorn[standard]`, `httpx`, `pydantic`, `pydantic-settings`, `python-dotenv`, `pytest`, `SQLAlchemy`, `asyncpg`, `passlib[bcrypt]`, `PyJWT`.
+裁剪策略：按 token 预算和优先级裁剪。
 
-## 4. 端到端数据流
-1. 用户在 `InputBar` 输入 → `Home.handleSend`。
-2. 前端本地插入 user + streaming assistant 占位；立即保存到 `localStorage`。
-3. 组装 `ChatRequest`（system_prompt/模型/温度 + 历史消息）→ `POST /api/chat/stream`.
-4. FastAPI 生成 `request_id`，调用 `run_chat_stream` → `llm_client.chat_completions_stream` → 上游 LLM。
-5. 后端将 delta/thinking/usage/raw 以 SSE 发送；前端实时拼接到最后一条 assistant 消息并更新 meta。
-6. 流结束后清除 streaming 标记；会话切换/清空/重命名均同步更新 `sessions` 状态并持久化。
-7. 登录后自动 `pull` 同步；本地变更后节流 `push`；若冲突则拉取覆盖并提示。
+长期记忆格式中包含“当前时间”，时区来自 `app_timezone`。
+- 支持固定偏移写法（如 `UTC+8`、`UTC+08:00`），不依赖系统 zoneinfo 数据库。
 
-## 5. 数据与存储
-- 浏览器 `localStorage`：
-  - `project-origin:sessions:v1:{userId}`：会话列表 + activeId（含 messages/settings）。
-  - `project-origin:models:v1:{userId}`：模型优先级列表。
-  - `project-origin:sync:v1:{userId}`：`lastSyncAt`。
-  - 旧版迁移键 `project-origin:v1:{userId}`（仅 messages + settings）。
-- 服务器：PostgreSQL（users/refresh_tokens/sessions/embeddings）。
-- 日志/追踪：`x-request-id` 与 `x-cost-ms` 头部便于链路排查；前端消息 `meta.request_id` 展示。
+#### 3.5.2 摘要压缩（`services/summary_service.py`）
+- 触发前提：
+  - 总轮数 >= `context_summary_trigger`
+  - 压缩区间轮数 > 3
+  - 压缩区间 token > `context_summary_min_tokens`
+- 压缩区间：
+  - 起点：上次摘要 `message_range_end`（不加一）
+  - 终点：倒数第 `context_summary_tail_round_index` 轮对应结束位置（包含）
+- 输出：新摘要写入 `memory_summaries`。
+- 模型：优先使用 `summary_model`，与主聊天模型解耦。
+- 支持手动全局压缩：`POST /api/memory/sessions/{session_id}/compress`。
 
-## 6. 依赖关系图（文字版）
-- `frontend/src/pages/Home.tsx`
-  - 依赖：`api/postChat` → 后端 `/api/chat`
-  - 状态读写：`store/chatStore.ts`（封装 `persist.ts`）
-  - UI：`ChatWindow`、`InputBar`、`SettingsDrawer`
-- 后端 `routes/chat.py`
-  - 依赖：`services/run_chat`
-    - 调用：`llm/client.py`（httpx → LLM 网关）
-  - 共享：`schemas/chat.py`（数据契约）、`core/config.py`（配置）、`core/logging.py`（request_id）、`core/errors.py`（统一错误）
+#### 3.5.3 长期记忆提取（`services/memory_extract_service.py`）
+- 触发：按 `memory_extract_interval` 轮次 + 首次补偿策略。
+- 高低信号过滤：低信号内容直接跳过。
+- 提取模型：
+  - 主模型：`memory_extract_model`（默认 `gemini-3-flash-preview-thinking`）
+  - 失败后 fallback：`memory_extract_fallback_model`
+- 去重策略：
+  - 提示词输入中包含“已有长期记忆”，要求无变化不重复输出。
+  - 后端仍做键级冲突与 correction 处理（双保险）。
+- 审批策略：
+  - `memory_extract_require_confirm=true` 时，新记忆写入 `needs_review=true`，不直接参与上下文。
+  - 审批前不会提前失活旧记忆；覆盖/更正在 approve 时执行，避免“未审批先覆盖”。
 
-## 7. 扩展与注意事项
-- 认证/鉴权：已实现 JWT；上线需收紧 `allow_origins`。
-- 输入/输出限制：未做长度校验与费控；需在前端或服务端增加字数/Token 限制、流式响应支持。
-- 错误处理：前端以 assistant 气泡展示错误文本；可补充重试/回退。
-- 多模型/供应商：`adapters.py` 空位用于封装不同厂商的请求/响应转换；前端模型列表已支持自定义排序。
-- 日志与调试：`APP_DEBUG_RAW=true` 时返回上游原始 JSON，便于前端折叠查看；生产应设为 false。
-- 测试：仅有 smoke 测试；建议增加 service 层和路由的集成测试，并对 `chatStore` 进行单元测试（可用 jsdom/localStorage mock）。
+#### 3.5.6 记忆更正与合并审批（`routes/memory.py`）
+- 待审核记忆查询会返回 `review_hints`，用于提示：
+  - `请求更正“a”为“b”`
+  - `请求合并“a”与“b”为“c”`
+- `approve` 时执行自动规则：
+  - 同键同内容：合并为已有记忆（更新时间/置信度），避免重复 active。
+  - 同键不同内容：旧记忆失活，新记忆生效，必要时提升为 `correction`。
+  - 多条同键：尝试合并为一条新内容并失活旧条目。
 
-## 8. 快速运行（本地）
-- 后端：在 `backend` 建立虚拟环境并填好 `.env`，`python -m uvicorn app.main:app --reload --port 8000`.
-- 前端：`cd frontend && npm install && npm run dev`，默认向 `http://127.0.0.1:8000` 发送请求。
+#### 3.5.4 Embedding（`services/embedding_service.py`）
+- 对话切块、摘要、向量计算、入库。
+- 召回时做余弦相似度过滤并注入回忆层。
+- embedding 失败不阻塞主回复。
+
+#### 3.5.5 Chat Service（`services/chat_service.py`）
+- `run_chat` / `run_chat_stream`：
+  - 登录用户：调用 `assemble_context`。
+  - 匿名用户：退化为传统 `[system] + messages`。
+- 回复后异步任务（不阻塞）：
+  - `maybe_compress_session`
+  - `maybe_extract_memories`
+  - `chunk_and_store_session`（若开启）
+
+## 4. 路由总览
+- `POST /api/chat`
+- `POST /api/chat/stream`
+- `POST /api/auth/register|login|refresh|logout`
+- `GET/POST /api/sessions/*`
+- `GET/POST/PUT/DELETE /api/personas/*`
+- `GET/PUT/DELETE /api/memory/personas/{persona_id}/memories*`
+- `POST /api/memory/personas/{persona_id}/memories/{memory_id}/approve`
+- `POST /api/memory/personas/{persona_id}/memories/{memory_id}/reject`
+- `GET /api/memory/sessions/{session_id}/summary`
+- `POST /api/memory/sessions/{session_id}/compress`
+- `GET /api/memory/stats`
+
+## 5. 调试与开发者模式
+- `APP_DEBUG_RAW=true` 时，后端返回 raw 调试信息。
+- 前端 developer 模式可查看：
+  - thinking
+  - raw
+  - assembled messages（显示发送原文）
+  - memory status
+
+## 6. 运行要点
+- 修改 `.env` 后需重启后端。
+- 若使用时区功能，建议显式配置：
+  - `APP_TIMEZONE=UTC+8`
+- 数据库结构通过 Alembic 迁移维护。

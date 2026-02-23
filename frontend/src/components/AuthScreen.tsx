@@ -35,6 +35,10 @@ export default function AuthScreen(props: { onAuth: (state: AuthState) => void }
                 setError("密码过长（最多 72 字节）");
                 return;
             }
+            if (e?.status === 400 && e?.message?.includes("Password too short")) {
+                setError("密码过短");
+                return;
+            }
             setError(e?.message ?? "请求失败");
         } finally {
             setLoading(false);

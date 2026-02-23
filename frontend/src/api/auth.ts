@@ -59,24 +59,58 @@ export async function logout(baseUrl: string, refreshToken: string) {
     });
 }
 
+let inFlightRefresh: Promise<AuthState> | null = null;
+let consecutiveRefreshAuthFailures = 0;
+const MAX_REFRESH_AUTH_FAILURES_BEFORE_LOGOUT = 3;
+
 export async function authorizedFetch(
     baseUrl: string,
     path: string,
     init: RequestInit,
     auth: AuthState,
-    onAuthUpdate: (next: AuthState) => void
+    onAuthUpdate: (next: AuthState | null) => void
 ) {
     const headers = new Headers(init.headers ?? {});
     headers.set("Authorization", `Bearer ${auth.accessToken}`);
     const res = await fetch(`${baseUrl}${path}`, { ...init, headers });
-    if (res.status !== 401) return res;
+    if (res.status !== 401) {
+        consecutiveRefreshAuthFailures = 0;
+        return res;
+    }
 
     if (!auth.refreshToken) return res;
 
-    const refreshed = await refresh(baseUrl, auth.refreshToken);
-    onAuthUpdate(refreshed);
+    try {
+        if (!inFlightRefresh) {
+            inFlightRefresh = refresh(baseUrl, auth.refreshToken);
+        }
+        const refreshed = await inFlightRefresh;
+        onAuthUpdate(refreshed);
 
-    const retryHeaders = new Headers(init.headers ?? {});
-    retryHeaders.set("Authorization", `Bearer ${refreshed.accessToken}`);
-    return fetch(`${baseUrl}${path}`, { ...init, headers: retryHeaders });
+        const retryHeaders = new Headers(init.headers ?? {});
+        retryHeaders.set("Authorization", `Bearer ${refreshed.accessToken}`);
+        const retryRes = await fetch(`${baseUrl}${path}`, { ...init, headers: retryHeaders });
+        if (retryRes.status === 401 || retryRes.status === 403) {
+            consecutiveRefreshAuthFailures += 1;
+            if (consecutiveRefreshAuthFailures >= MAX_REFRESH_AUTH_FAILURES_BEFORE_LOGOUT) {
+                onAuthUpdate(null);
+            }
+        } else {
+            consecutiveRefreshAuthFailures = 0;
+        }
+        return retryRes;
+    } catch (e: any) {
+        const status = Number(e?.status ?? 0);
+        if (status === 401 || status === 403) {
+            consecutiveRefreshAuthFailures += 1;
+            if (consecutiveRefreshAuthFailures >= MAX_REFRESH_AUTH_FAILURES_BEFORE_LOGOUT) {
+                onAuthUpdate(null);
+            }
+        } else {
+            // 网络抖动/超时不应导致退出登录
+        }
+        return res;
+    } finally {
+        inFlightRefresh = null;
+    }
 }

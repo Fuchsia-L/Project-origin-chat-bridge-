@@ -107,6 +107,8 @@ function Bubble({
     onSelectVariant,
     isActive,
     onActivate,
+    turnNo,
+    developerMode,
 }: {
     m: ChatMessage;
     onTick: () => void;
@@ -125,13 +127,18 @@ function Bubble({
     onSelectVariant: (index: number, variantIndex: number) => void;
     isActive: boolean;
     onActivate: (index: number) => void;
+    turnNo: number | null;
+    developerMode: boolean;
 }) {
     const isUser = m.role === "user";
     const [rawOpen, setRawOpen] = useState(false);
     const [thinkingOpen, setThinkingOpen] = useState(false);
+    const [sentOpen, setSentOpen] = useState(false);
+    const [memoryOpen, setMemoryOpen] = useState(false);
 
-    const hasRaw = m.meta?.raw != null;
+    const hasRaw = developerMode && m.meta?.raw != null;
     const hasThinking = (m.meta?.thinking ?? "").trim().length > 0;
+    const hasMemoryStatus = developerMode && m.meta?.memory_status != null;
 
     const rawText = useMemo(() => {
         if (!hasRaw) return "";
@@ -149,7 +156,9 @@ function Bubble({
     }, [hasThinking, hasRaw, m.meta?.raw, m.meta?.thinking]);
 
     const hasMetaLine = !isUser;
-    const statusText = m.meta?.isError
+    const statusText = m.meta?.isRetrying
+        ? "重试中"
+        : m.meta?.isError
         ? "错误"
         : m.meta?.isAborted
         ? "已中断"
@@ -220,6 +229,7 @@ function Bubble({
                                 重新生成
                             </button>
                         ) : null}
+                        {turnNo ? <span className="text-zinc-500">第{turnNo}轮</span> : null}
                         {canNavigateVariants && (
                             <span className="text-zinc-500">
                                 {activeVariantIndex + 1}/{totalVariants}
@@ -263,20 +273,39 @@ function Bubble({
                             isActive ? "flex" : "hidden group-hover:flex",
                         ].join(" ")}
                     >
+                        {turnNo ? <span className="text-zinc-200">第{turnNo}轮</span> : null}
                         <button className="underline" onClick={() => onStartEdit(index, m.content)}>
                             编辑
                         </button>
                         <button className="underline" onClick={() => onDelete(index)}>
                             删除
                         </button>
+                        {developerMode && m.meta?.sent_context?.messages?.length ? (
+                            <button className="underline" onClick={() => setSentOpen((v) => !v)}>
+                                {sentOpen ? "收起发送原文" : "显示发送原文"}
+                            </button>
+                        ) : null}
                     </div>
                 )}
 
-                {!isUser && (thinkingText || hasRaw) && (
+                {isUser && sentOpen && developerMode && m.meta?.sent_context?.messages?.length ? (
+                    <pre className="mb-2 max-h-64 overflow-auto rounded-xl border bg-white p-2 text-[11px] text-zinc-800">
+                        {m.meta.sent_context.messages
+                            .map((x) => `${x.role}: ${x.content}`)
+                            .join("\n\n")}
+                    </pre>
+                ) : null}
+
+                {!isUser && (thinkingText || hasRaw || hasMemoryStatus) && (
                     <div className="mb-2 flex items-center gap-3 text-[11px] text-zinc-600">
                         {thinkingText && (
                             <button className="underline" onClick={() => setThinkingOpen((v) => !v)}>
                                 {thinkingOpen ? "收起 thinking" : "展开 thinking"}
+                            </button>
+                        )}
+                        {hasMemoryStatus && (
+                            <button className="underline" onClick={() => setMemoryOpen((v) => !v)}>
+                                {memoryOpen ? "收起 memory" : "展开 memory"}
                             </button>
                         )}
                         {hasRaw && (
@@ -285,6 +314,12 @@ function Bubble({
                             </button>
                         )}
                     </div>
+                )}
+
+                {memoryOpen && hasMemoryStatus && (
+                    <pre className="mb-2 max-h-64 overflow-auto rounded-xl border bg-white p-2 text-[11px] text-zinc-800">
+                        {JSON.stringify(m.meta?.memory_status, null, 2)}
+                    </pre>
                 )}
 
                 {thinkingOpen && thinkingText && (
@@ -355,20 +390,24 @@ function Bubble({
 
 export default function ChatWindow({
     messages,
+    activePersona,
     onEditMessage,
     onDeleteMessage,
     onRegenerateMessage,
     onStopStream,
     onSelectVariant,
     onSendEditMessage,
+    developerMode,
 }: {
     messages: ChatMessage[];
+    activePersona?: { name: string; avatar_url?: string } | null;
     onEditMessage: (index: number, nextContent: string) => void;
     onDeleteMessage: (index: number) => void;
     onRegenerateMessage: (index: number) => void;
     onStopStream: (streamId: string) => void;
     onSelectVariant: (index: number, variantIndex: number) => void;
     onSendEditMessage: (index: number, nextContent: string) => void;
+    developerMode: boolean;
 }) {
     const bottomRef = useRef<HTMLDivElement | null>(null);
     const [editingIndex, setEditingIndex] = useState<number | null>(null);
@@ -386,6 +425,18 @@ export default function ChatWindow({
         return -1;
     }, [messages]);
 
+    const turnByIndex = useMemo(() => {
+        const map: Array<number | null> = [];
+        let currentTurn = 0;
+        for (let i = 0; i < messages.length; i += 1) {
+            if (messages[i].role === "user") {
+                currentTurn += 1;
+            }
+            map[i] = currentTurn > 0 ? currentTurn : null;
+        }
+        return map;
+    }, [messages]);
+
     useEffect(() => {
         bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages.length]);
@@ -395,6 +446,20 @@ export default function ChatWindow({
             className="flex-1 overflow-y-auto px-4 py-3"
             onClick={() => setActiveIndex(null)}
         >
+            {activePersona ? (
+                <div className="mb-3 inline-flex items-center gap-2 rounded-full border bg-white px-3 py-1 text-xs text-zinc-600">
+                    {activePersona.avatar_url ? (
+                        <img
+                            src={activePersona.avatar_url}
+                            alt={activePersona.name}
+                            className="h-5 w-5 rounded-full object-cover"
+                        />
+                    ) : (
+                        <div className="h-5 w-5 rounded-full bg-zinc-200" />
+                    )}
+                    <span>当前角色: {activePersona.name}</span>
+                </div>
+            ) : null}
             {messages.map((m, i) => (
                 <Bubble
                     key={i}
@@ -425,6 +490,8 @@ export default function ChatWindow({
                     onRegenerate={onRegenerateMessage}
                     onStop={onStopStream}
                     onSelectVariant={onSelectVariant}
+                    turnNo={turnByIndex[i] ?? null}
+                    developerMode={developerMode}
                     onTick={() => bottomRef.current?.scrollIntoView({ behavior: "smooth" })}
                 />
             ))}

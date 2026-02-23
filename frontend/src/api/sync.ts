@@ -5,7 +5,7 @@ import { authorizedFetch } from "./auth";
 export async function pullSessions(
     baseUrl: string,
     auth: AuthState,
-    onAuthUpdate: (next: AuthState) => void,
+    onAuthUpdate: (next: AuthState | null) => void,
     since: number
 ): Promise<SessionPayload[]> {
     const res = await authorizedFetch(
@@ -31,7 +31,7 @@ export async function pullSessions(
 export async function pushSessions(
     baseUrl: string,
     auth: AuthState,
-    onAuthUpdate: (next: AuthState) => void,
+    onAuthUpdate: (next: AuthState | null) => void,
     sessions: SessionPayload[]
 ): Promise<{ accepted: string[]; conflicts: string[] }> {
     const res = await authorizedFetch(

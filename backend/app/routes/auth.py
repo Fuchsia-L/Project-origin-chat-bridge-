@@ -48,6 +48,11 @@ async def _issue_tokens(db: AsyncSession, user: User) -> AuthResponse:
 
 @router.post("/register", response_model=AuthResponse)
 async def register(req: AuthRegisterRequest, db: AsyncSession = Depends(get_db)):
+    if len(req.password) < settings.password_min_length:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password too short (min {settings.password_min_length})",
+        )
     if len(req.password.encode("utf-8")) > 72:
         raise HTTPException(status_code=400, detail="Password too long (max 72 bytes)")
     result = await db.execute(select(User).where(User.email == req.email))
@@ -104,6 +109,8 @@ async def refresh(req: AuthRefreshRequest, db: AsyncSession = Depends(get_db)):
     stored = result.scalars().first()
     if not stored or stored.revoked_at is not None or stored.expires_at <= _now():
         raise HTTPException(status_code=401, detail="Refresh token expired or revoked")
+    stored.revoked_at = _now()
+    await db.commit()
     return await _issue_tokens(db, user)
 
 

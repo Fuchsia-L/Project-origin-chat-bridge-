@@ -19,10 +19,11 @@ export default function InputBar({
     return (
         <div className="border-t bg-white p-3">
             <div className="flex gap-2">
-                <input
-                    className="flex-1 rounded-xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="输入消息，回车发送…"
+                <textarea
+                    className="flex-1 resize-none rounded-xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="畅所欲言…"
                     value={text}
+                    rows={3}
                     disabled={!!disabled}
                     onChange={(e) => setText(e.target.value)}
                     onKeyDown={(e) => {

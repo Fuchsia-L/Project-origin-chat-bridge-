@@ -1,7 +1,8 @@
 import json
+import time
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user
@@ -28,6 +29,26 @@ def _payload_size(sessions: list[SessionPayload]) -> int:
         return 0
 
 
+def _tombstone_cutoff_ms() -> int | None:
+    ttl_days = settings.session_tombstone_ttl_days
+    if ttl_days is None or ttl_days <= 0:
+        return None
+    return int(time.time() * 1000) - ttl_days * 24 * 60 * 60 * 1000
+
+
+async def _cleanup_tombstones(db: AsyncSession, user_id: str) -> None:
+    cutoff = _tombstone_cutoff_ms()
+    if cutoff is None:
+        return
+    await db.execute(
+        delete(ChatSession).where(
+            ChatSession.user_id == user_id,
+            ChatSession.deleted_at.is_not(None),
+            ChatSession.deleted_at <= cutoff,
+        )
+    )
+
+
 @router.get("/list", response_model=SessionListResponse)
 async def list_sessions(
     user: User = Depends(get_current_user),
@@ -35,7 +56,10 @@ async def list_sessions(
 ):
     result = await db.execute(
         select(ChatSession)
-        .where(ChatSession.user_id == user.id)
+        .where(
+            ChatSession.user_id == user.id,
+            ChatSession.deleted_at.is_(None),
+        )
         .order_by(ChatSession.updated_at.desc())
     )
     sessions = [
@@ -58,7 +82,14 @@ async def pull_sessions(
 ):
     stmt = select(ChatSession).where(ChatSession.user_id == user.id)
     if req.since is not None:
-        stmt = stmt.where(ChatSession.updated_at > req.since)
+        stmt = stmt.where(
+            or_(
+                ChatSession.updated_at > req.since,
+                ChatSession.deleted_at > req.since,
+            )
+        )
+    else:
+        stmt = stmt.where(ChatSession.deleted_at.is_(None))
     result = await db.execute(stmt.order_by(ChatSession.updated_at.desc()))
     sessions = []
     for s in result.scalars().all():
@@ -67,7 +98,15 @@ async def pull_sessions(
         payload.setdefault("title", s.title)
         payload.setdefault("createdAt", s.created_at)
         payload.setdefault("updatedAt", s.updated_at)
+        payload.setdefault("persona_id", s.persona_id)
+        payload.setdefault("project_id", s.project_id)
+        if s.deleted_at is not None:
+            payload["deletedAt"] = s.deleted_at
+            payload.setdefault("messages", [])
+            payload.setdefault("settings", {})
         sessions.append(SessionPayload.model_validate(payload))
+    await _cleanup_tombstones(db, user.id)
+    await db.commit()
     return PullResponse(sessions=sessions)
 
 
@@ -103,20 +142,31 @@ async def push_sessions(
                 title=payload.title,
                 created_at=payload.createdAt,
                 updated_at=payload.updatedAt,
+                deleted_at=payload.deletedAt,
+                persona_id=payload.persona_id,
+                project_id=payload.project_id,
                 payload=payload.model_dump(),
             )
             db.add(row)
             accepted.append(payload.id)
             continue
 
+        if existing.deleted_at is not None and payload.deletedAt is None:
+            conflicts.append(payload.id)
+            continue
+
         if payload.updatedAt >= existing.updated_at:
             existing.title = payload.title
             existing.created_at = payload.createdAt
             existing.updated_at = payload.updatedAt
+            existing.deleted_at = payload.deletedAt
+            existing.persona_id = payload.persona_id
+            existing.project_id = payload.project_id
             existing.payload = payload.model_dump()
             accepted.append(payload.id)
         else:
             conflicts.append(payload.id)
 
+    await _cleanup_tombstones(db, user.id)
     await db.commit()
     return PushResponse(accepted=accepted, conflicts=conflicts)

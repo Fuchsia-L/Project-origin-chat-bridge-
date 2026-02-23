@@ -24,6 +24,9 @@ class OpenAICompatClient:
         model: str,
         messages: list[dict[str, str]],
         temperature: float,
+        top_p: float | None = None,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
         request_id: Optional[str] = None,
     ) -> dict[str, Any]:
         url = f"{self.base_url}/chat/completions"
@@ -39,6 +42,12 @@ class OpenAICompatClient:
             "messages": messages,
             "temperature": temperature,
         }
+        if top_p is not None:
+            payload["top_p"] = top_p
+        if frequency_penalty is not None:
+            payload["frequency_penalty"] = frequency_penalty
+        if presence_penalty is not None:
+            payload["presence_penalty"] = presence_penalty
         if settings.llm_safety_block:
             payload["safety_settings"] = [
                 {"category": "HARM_CATEGORY_HARASSMENT", "threshold": settings.llm_safety_block},
@@ -48,7 +57,7 @@ class OpenAICompatClient:
             ]
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout_s) as client:
+            async with httpx.AsyncClient(timeout=self.timeout_s, trust_env=False) as client:
                 resp = await client.post(url, headers=headers, json=payload)
         except httpx.RequestError as e:
             raise AppError(f"LLM request failed: {e}", status_code=502, code="llm_request_error")
@@ -73,6 +82,9 @@ class OpenAICompatClient:
         model: str,
         messages: list[dict[str, str]],
         temperature: float,
+        top_p: float | None = None,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
         request_id: Optional[str] = None,
     ):
         url = f"{self.base_url}/chat/completions"
@@ -90,6 +102,12 @@ class OpenAICompatClient:
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        if top_p is not None:
+            payload["top_p"] = top_p
+        if frequency_penalty is not None:
+            payload["frequency_penalty"] = frequency_penalty
+        if presence_penalty is not None:
+            payload["presence_penalty"] = presence_penalty
         if settings.llm_safety_block:
             payload["safety_settings"] = [
                 {"category": "HARM_CATEGORY_HARASSMENT", "threshold": settings.llm_safety_block},
@@ -99,7 +117,7 @@ class OpenAICompatClient:
             ]
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout_s) as client:
+            async with httpx.AsyncClient(timeout=self.timeout_s, trust_env=False) as client:
                 async with client.stream("POST", url, headers=headers, json=payload) as resp:
                     if resp.status_code // 100 != 2:
                         try:
